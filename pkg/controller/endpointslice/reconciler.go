@@ -150,34 +150,43 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 	desiredMetaByPortMap := map[endpointutil.PortMapKey]*endpointMeta{}
 	desiredEndpointsByPortMap := map[endpointutil.PortMapKey]endpointSet{}
 	numDesiredEndpoints := 0
+	for _, panicMode := range []bool{false, true} {
+		for _, pod := range pods {
+			includeTerminating := service.Spec.PublishNotReadyAddresses || utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceTerminatingCondition)
+			if !endpointutil.ShouldPodBeInEndpointSlice(pod, includeTerminating) {
+				continue
+			}
 
-	for _, pod := range pods {
-		includeTerminating := service.Spec.PublishNotReadyAddresses || utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceTerminatingCondition)
-		if !endpointutil.ShouldPodBeInEndpointSlice(pod, includeTerminating) {
-			continue
-		}
+			if panicMode {
+				service = service.DeepCopy()
+				service.Spec.PublishNotReadyAddresses = true
+			}
 
-		endpointPorts := getEndpointPorts(service, pod)
-		epHash := endpointutil.NewPortMapKey(endpointPorts)
-		if _, ok := desiredEndpointsByPortMap[epHash]; !ok {
-			desiredEndpointsByPortMap[epHash] = endpointSet{}
-		}
+			endpointPorts := getEndpointPorts(service, pod)
+			epHash := endpointutil.NewPortMapKey(endpointPorts)
 
-		if _, ok := desiredMetaByPortMap[epHash]; !ok {
-			desiredMetaByPortMap[epHash] = &endpointMeta{
-				AddressType: addressType,
-				Ports:       endpointPorts,
+			if _, ok := desiredMetaByPortMap[epHash]; !ok {
+				desiredMetaByPortMap[epHash] = &endpointMeta{
+					AddressType: addressType,
+					Ports:       endpointPorts,
+				}
+			}
+
+			node, err := r.nodeLister.Get(pod.Spec.NodeName)
+			if err != nil {
+				return err
+			}
+			endpoint := podToEndpoint(pod, node, service, addressType)
+			if len(endpoint.Addresses) > 0 {
+				if _, ok := desiredEndpointsByPortMap[epHash]; !ok {
+					desiredEndpointsByPortMap[epHash] = endpointSet{}
+				}
+				desiredEndpointsByPortMap[epHash].Insert(&endpoint)
+				numDesiredEndpoints++
 			}
 		}
-
-		node, err := r.nodeLister.Get(pod.Spec.NodeName)
-		if err != nil {
-			return err
-		}
-		endpoint := podToEndpoint(pod, node, service, addressType)
-		if len(endpoint.Addresses) > 0 {
-			desiredEndpointsByPortMap[epHash].Insert(&endpoint)
-			numDesiredEndpoints++
+		if len(desiredEndpointsByPortMap) > 0 || service.Spec.PublishNotReadyAddresses {
+			break
 		}
 	}
 

@@ -439,50 +439,62 @@ func (e *Controller) syncService(key string) error {
 	var totalReadyEps int
 	var totalNotReadyEps int
 
-	for _, pod := range pods {
-		if len(pod.Status.PodIP) == 0 {
-			klog.V(5).Infof("Failed to find an IP for pod %s/%s", pod.Namespace, pod.Name)
-			continue
-		}
-		if !tolerateUnreadyEndpoints && pod.DeletionTimestamp != nil {
-			klog.V(5).Infof("Pod is being deleted %s/%s", pod.Namespace, pod.Name)
-			continue
-		}
-
-		ep, err := podToEndpointAddressForService(service, pod)
-		if err != nil {
-			// this will happen, if the cluster runs with some nodes configured as dual stack and some as not
-			// such as the case of an upgrade..
-			klog.V(2).Infof("failed to find endpoint for service:%v with ClusterIP:%v on pod:%v with error:%v", service.Name, service.Spec.ClusterIP, pod.Name, err)
-			continue
-		}
-
-		epa := *ep
-		if endpointutil.ShouldSetHostname(pod, service) {
-			epa.Hostname = pod.Spec.Hostname
-		}
-
-		// Allow headless service not to have ports.
-		if len(service.Spec.Ports) == 0 {
-			if service.Spec.ClusterIP == api.ClusterIPNone {
-				subsets, totalReadyEps, totalNotReadyEps = addEndpointSubset(subsets, pod, epa, nil, tolerateUnreadyEndpoints)
-				// No need to repack subsets for headless service without ports.
+	for _, panicMode := range []bool{false, true} {
+		for _, pod := range pods {
+			if len(pod.Status.PodIP) == 0 {
+				klog.V(5).Infof("Failed to find an IP for pod %s/%s", pod.Namespace, pod.Name)
+				continue
 			}
-		} else {
-			for i := range service.Spec.Ports {
-				servicePort := &service.Spec.Ports[i]
-				portNum, err := podutil.FindPort(pod, servicePort)
-				if err != nil {
-					klog.V(4).Infof("Failed to find port for service %s/%s: %v", service.Namespace, service.Name, err)
-					continue
+
+			if panicMode {
+				service = service.DeepCopy()
+				service.Spec.PublishNotReadyAddresses = true
+				tolerateUnreadyEndpoints = service.Spec.PublishNotReadyAddresses
+			}
+
+			if !tolerateUnreadyEndpoints && pod.DeletionTimestamp != nil {
+				klog.V(5).Infof("Pod is being deleted %s/%s", pod.Namespace, pod.Name)
+				continue
+			}
+
+			ep, err := podToEndpointAddressForService(service, pod)
+			if err != nil {
+				// this will happen, if the cluster runs with some nodes configured as dual stack and some as not
+				// such as the case of an upgrade..
+				klog.V(2).Infof("failed to find endpoint for service:%v with ClusterIP:%v on pod:%v with error:%v", service.Name, service.Spec.ClusterIP, pod.Name, err)
+				continue
+			}
+
+			epa := *ep
+			if endpointutil.ShouldSetHostname(pod, service) {
+				epa.Hostname = pod.Spec.Hostname
+			}
+
+			// Allow headless service not to have ports.
+			if len(service.Spec.Ports) == 0 {
+				if service.Spec.ClusterIP == api.ClusterIPNone {
+					subsets, totalReadyEps, totalNotReadyEps = addEndpointSubset(subsets, pod, epa, nil, tolerateUnreadyEndpoints)
+					// No need to repack subsets for headless service without ports.
 				}
-				epp := endpointPortFromServicePort(servicePort, portNum)
+			} else {
+				for i := range service.Spec.Ports {
+					servicePort := &service.Spec.Ports[i]
+					portNum, err := podutil.FindPort(pod, servicePort)
+					if err != nil {
+						klog.V(4).Infof("Failed to find port for service %s/%s: %v", service.Namespace, service.Name, err)
+						continue
+					}
+					epp := endpointPortFromServicePort(servicePort, portNum)
 
-				var readyEps, notReadyEps int
-				subsets, readyEps, notReadyEps = addEndpointSubset(subsets, pod, epa, epp, tolerateUnreadyEndpoints)
-				totalReadyEps = totalReadyEps + readyEps
-				totalNotReadyEps = totalNotReadyEps + notReadyEps
+					var readyEps, notReadyEps int
+					subsets, readyEps, notReadyEps = addEndpointSubset(subsets, pod, epa, epp, tolerateUnreadyEndpoints)
+					totalReadyEps = totalReadyEps + readyEps
+					totalNotReadyEps = totalNotReadyEps + notReadyEps
+				}
 			}
+		}
+		if totalReadyEps > 0 || service.Spec.PublishNotReadyAddresses {
+			break
 		}
 	}
 	subsets = endpoints.RepackSubsets(subsets)
