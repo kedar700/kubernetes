@@ -46,6 +46,7 @@ func podToEndpoint(pod *corev1.Pod, node *corev1.Node, service *corev1.Service, 
 	terminating := pod.DeletionTimestamp != nil
 	// For compatibility reasons, "ready" should never be "true" if a pod is terminatng, unless
 	// publishNotReadyAddresses was set.
+
 	ready := service.Spec.PublishNotReadyAddresses || (serving && !terminating)
 	ep := discovery.Endpoint{
 		Addresses: getEndpointAddresses(pod.Status, service, addressType),
