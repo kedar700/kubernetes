@@ -166,6 +166,10 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 	numUnreadyEndpoints := 0
 	// We handle discovering panic mode this way to determine if the system is in panic mode with minimal code changes.
 	for _, panicMode := range []bool{false, true} {
+		if panicMode {
+			numDesiredEndpoints = 0
+			numUnreadyEndpoints = 0
+		}
 		for _, pod := range pods {
 			includeTerminating := service.Spec.PublishNotReadyAddresses || utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceTerminatingCondition)
 			if !endpointutil.ShouldPodBeInEndpointSlice(pod, includeTerminating) {
@@ -175,8 +179,6 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 			if panicMode {
 				service = service.DeepCopy()
 				service.Spec.PublishNotReadyAddresses = true
-				numDesiredEndpoints = 0
-				numUnreadyEndpoints = 0
 			}
 
 			endpointPorts := getEndpointPorts(service, pod)
