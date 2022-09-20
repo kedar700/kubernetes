@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +39,8 @@ import (
 	endpointutil "k8s.io/kubernetes/pkg/controller/util/endpoint"
 	"k8s.io/kubernetes/pkg/features"
 )
+
+const PanicModeAnnotation = "hubspot.com/enable-panic-mode"
 
 // reconciler is responsible for transforming current EndpointSlice state into
 // desired state
@@ -146,11 +149,21 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 		}
 	}
 
+	// Add annotation support to opt out of panic mode if desired.
+	//Default is set to true for all hubspot services with the ability to opt out by setting the annotation
+	enablePanicModeForService := true
+	if mode, ok := service.Annotations[PanicModeAnnotation]; ok {
+		val, err := strconv.ParseBool(mode)
+		if err == nil {
+			enablePanicModeForService = val
+		}
+	}
+
 	// Build data structures for desired state.
 	desiredMetaByPortMap := map[endpointutil.PortMapKey]*endpointMeta{}
 	desiredEndpointsByPortMap := map[endpointutil.PortMapKey]endpointSet{}
 	numDesiredEndpoints := 0
-
+	numUnreadyEndpoints := 0
 	// We handle discovering panic mode this way to determine if the system is in panic mode with minimal code changes.
 	for _, panicMode := range []bool{false, true} {
 		for _, pod := range pods {
@@ -162,6 +175,8 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 			if panicMode {
 				service = service.DeepCopy()
 				service.Spec.PublishNotReadyAddresses = true
+				numDesiredEndpoints = 0
+				numUnreadyEndpoints = 0
 			}
 
 			endpointPorts := getEndpointPorts(service, pod)
@@ -184,10 +199,13 @@ func (r *reconciler) reconcileByAddressType(service *corev1.Service, pods []*cor
 					desiredEndpointsByPortMap[epHash] = endpointSet{}
 				}
 				desiredEndpointsByPortMap[epHash].Insert(&endpoint)
+				if !*endpoint.Conditions.Ready {
+					numUnreadyEndpoints++
+				}
 				numDesiredEndpoints++
 			}
 		}
-		if len(desiredEndpointsByPortMap) > 0 || service.Spec.PublishNotReadyAddresses {
+		if numUnreadyEndpoints != numDesiredEndpoints || service.Spec.PublishNotReadyAddresses || !enablePanicModeForService {
 			break
 		}
 	}
@@ -356,13 +374,13 @@ func (r *reconciler) finalize(
 // the list of desired endpoints and returns lists of slices to create, update,
 // and delete. It also checks that the slices mirror the parent services labels.
 // The logic is split up into several main steps:
-// 1. Iterate through existing slices, delete endpoints that are no longer
-//    desired and update matching endpoints that have changed. It also checks
-//    if the slices have the labels of the parent services, and updates them if not.
-// 2. Iterate through slices that have been modified in 1 and fill them up with
-//    any remaining desired endpoints.
-// 3. If there still desired endpoints left, try to fit them into a previously
-//    unchanged slice and/or create new ones.
+//  1. Iterate through existing slices, delete endpoints that are no longer
+//     desired and update matching endpoints that have changed. It also checks
+//     if the slices have the labels of the parent services, and updates them if not.
+//  2. Iterate through slices that have been modified in 1 and fill them up with
+//     any remaining desired endpoints.
+//  3. If there still desired endpoints left, try to fit them into a previously
+//     unchanged slice and/or create new ones.
 func (r *reconciler) reconcileByPortMapping(
 	service *corev1.Service,
 	existingSlices []*discovery.EndpointSlice,

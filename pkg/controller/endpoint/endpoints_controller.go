@@ -78,6 +78,8 @@ const (
 	// This field is deprecated. v1.Service.PublishNotReadyAddresses will replace it
 	// subsequent releases.  It will be removed no sooner than 1.13.
 	TolerateUnreadyEndpointsAnnotation = "service.alpha.kubernetes.io/tolerate-unready-endpoints"
+
+	PanicModeAnnotation = "hubspot.com/enable-panic-mode"
 )
 
 // NewEndpointController returns a new *Controller.
@@ -429,6 +431,16 @@ func (e *Controller) syncService(key string) error {
 		}
 	}
 
+	// Add annotation support to opt out of panic mode if desired.
+	//Default is set to true for all hubspot services with the ability to opt out by setting the annotation
+	enablePanicModeForService := true
+	if mode, ok := service.Annotations[PanicModeAnnotation]; ok {
+		val, err := strconv.ParseBool(mode)
+		if err == nil {
+			enablePanicModeForService = val
+		}
+	}
+
 	// We call ComputeEndpointLastChangeTriggerTime here to make sure that the
 	// state of the trigger time tracker gets updated even if the sync turns out
 	// to be no-op and we don't update the endpoints object.
@@ -495,7 +507,7 @@ func (e *Controller) syncService(key string) error {
 				}
 			}
 		}
-		if totalReadyEps > 0 || service.Spec.PublishNotReadyAddresses {
+		if totalReadyEps > 0 || service.Spec.PublishNotReadyAddresses || !enablePanicModeForService {
 			break
 		}
 	}
